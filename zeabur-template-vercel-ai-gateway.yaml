@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://schema.zeabur.app/template.json
+
+apiVersion: zeabur.com/v1
+kind: Template
+
+metadata:
+  name: Vercel AI Gateway Proxy
+
+spec:
+  description: >-
+    An OpenAI-compatible gateway proxy for the Vercel AI Gateway SDK.
+    Supports text chat completions and image generation (Gemini image models)
+    with configurable resolution and aspect ratio.
+  icon: https://cdn.simpleicons.org/vercel
+  tags:
+    - AI
+    - Gateway
+    - OpenAI
+    - Proxy
+
+  variables:
+    - key: PUBLIC_DOMAIN
+      type: DOMAIN
+      name: Domain
+      description: The domain to bind for the gateway service.
+
+  services:
+    - name: vercel-ai-gateway
+      icon: https://cdn.simpleicons.org/vercel
+      template: PREBUILT_V2
+      domainKey: PUBLIC_DOMAIN
+      spec:
+        source:
+          image: node:20-alpine
+        ports:
+          - id: web
+            port: 48000
+            type: HTTP
+        env:
+          PORT:
+            default: "48000"
+            readonly: true
+
+localization:
+  zh-TW:
+    description: >-
+      兼容 OpenAI 格式的 Vercel AI Gateway 代理閘道。
+      支援文字對話與圖片生成（Gemini 圖片模型），可自訂解析度與長寬比。
+    variables:
+      - key: PUBLIC_DOMAIN
+        name: 網域
+        description: 要綁定至閘道服務的網域。
+  zh-CN:
+    description: >-
+      兼容 OpenAI 格式的 Vercel AI Gateway 代理网关。
+      支持文本对话与图片生成（Gemini 图片模型），可自定义分辨率与宽高比。
+    variables:
+      - key: PUBLIC_DOMAIN
+        name: 域名
+        description: 要绑定至网关服务的域名。
+  ja-JP:
+    description: >-
+      OpenAI 互換の Vercel AI Gateway プロキシゲートウェイ。
+      テキストチャットと画像生成（Gemini 画像モデル）に対応し、解像度とアスペクト比を設定可能。
+    variables:
+      - key: PUBLIC_DOMAIN
+        name: ドメイン
+        description: ゲートウェイサービスにバインドするドメイン。

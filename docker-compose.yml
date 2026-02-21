@@ -1,0 +1,9 @@
+services:
+  vercel-ai-gateway:
+    build: .
+    container_name: vercel-ai-gateway
+    restart: unless-stopped
+    ports:
+      - "48000:48000"
+    environment:
+      - PORT=48000

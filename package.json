@@ -1,0 +1,17 @@
+{
+  "name": "vercel-ai-gateway-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible gateway proxy for Vercel AI Gateway with image generation support",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "ai": "^6.0.0",
+    "@ai-sdk/gateway": "^3.0.0",
+    "express": "^5.1.0",
+    "uuid": "^11.1.0"
+  }
+}
