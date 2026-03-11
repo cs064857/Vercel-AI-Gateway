@@ -27,11 +27,13 @@ spec:
   services:
     - name: vercel-ai-gateway
       icon: https://cdn.simpleicons.org/vercel
-      template: PREBUILT_V2
+      template: GIT
       domainKey: PUBLIC_DOMAIN
       spec:
         source:
-          image: node:20-alpine
+          type: GITHUB
+          repoID: 0 # TODO: 替換為您的 GitHub Repo ID (使用 curl https://api.github.com/repos/OWNER/REPO | jq '.id' 查詢)
+          branch: main
         ports:
           - id: web
             port: 48000
