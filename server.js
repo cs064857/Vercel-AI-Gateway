@@ -294,14 +294,6 @@ function buildImageUrlItems(req, files) {
   return items;
 }
 
-function buildImageResultContent(textContent, imageUrlItems) {
-  return JSON.stringify({
-    type: 'image_generation_result',
-    text: textContent || '',
-    images: imageUrlItems,
-  });
-}
-
 //構建 OpenAI 格式的 chat completion 回應
 function buildChatCompletionResponse(model, content, files = [], options = {}) {
   let responseContent = content || '';
@@ -313,7 +305,10 @@ function buildChatCompletionResponse(model, content, files = [], options = {}) {
     if (imageOutputMode === 'image_url' && request) {
       const imageUrlItems = buildImageUrlItems(request, files);
       if (imageUrlItems.length > 0) {
-        responseContent = buildImageResultContent(responseContent, imageUrlItems);
+        const imageMarkdowns = imageUrlItems.map((item, i) => `![generated_image_${i + 1}](${item.image_url})`);
+        responseContent = responseContent
+          ? `${responseContent}\n\n${imageMarkdowns.join('\n\n')}`
+          : imageMarkdowns.join('\n\n');
       }
     } else {
       const imageMarkdowns = buildInlineImageMarkdowns(files);
