@@ -59,7 +59,8 @@ const IMAGE_MODELS = [
 //判斷是否為圖片生成模型
 function isImageModel(model) {
   const modelLower = model.toLowerCase().replace('google/', '');
-  return IMAGE_MODELS.some(m => modelLower.includes(m));
+  return IMAGE_MODELS.some(m => modelLower.includes(m)) || 
+         (modelLower.includes('gemini') && modelLower.includes('image'));
 }
 
 //從請求中提取 API Key
@@ -80,22 +81,23 @@ function normalizeModelName(model) {
 
 //解析圖片生成參數
 function parseImageParams(body) {
-  //默認值
-  let imageSize = '4K';
-  let aspectRatio = '1:1';
+  //合併預設值，並以使用者傳輸的為優先，同時保留所有額外參數
+  const config = {
+    imageSize: '4K',
+    aspectRatio: '16:9'
+  };
 
   //從 body 頂層讀取（自定義擴展欄位）
-  if (body.imageSize) imageSize = body.imageSize;
-  if (body.resolution) imageSize = body.resolution;
-  if (body.aspectRatio) aspectRatio = body.aspectRatio;
-  if (body.aspect_ratio) aspectRatio = body.aspect_ratio;
+  if (body.imageSize || body.resolution) config.imageSize = body.imageSize || body.resolution;
+  if (body.aspectRatio || body.aspect_ratio) config.aspectRatio = body.aspectRatio || body.aspect_ratio;
 
-  //從 providerOptions 讀取（覆蓋優先）
+  //從 providerOptions 讀取並合併（覆蓋優先，包含所有其他附加參數如 numberOfImages 等）
   const googleOpts = body.providerOptions?.google?.imageConfig;
-  if (googleOpts?.imageSize) imageSize = googleOpts.imageSize;
-  if (googleOpts?.aspectRatio) aspectRatio = googleOpts.aspectRatio;
+  if (googleOpts && typeof googleOpts === 'object') {
+    Object.assign(config, googleOpts);
+  }
 
-  return { imageSize, aspectRatio };
+  return config;
 }
 
 //解析圖片回傳模式（預設使用 image_url，避免回應體積過大）
@@ -371,7 +373,7 @@ async function handleImageGeneration(req, res) {
   }
 
   const { model, messages, stream } = req.body;
-  const { imageSize, aspectRatio } = parseImageParams(req.body);
+  const imageConfig = parseImageParams(req.body);
   const imageOutputMode = parseImageOutputMode(req.body);
   const prompt = extractPrompt(messages);
 
@@ -383,7 +385,7 @@ async function handleImageGeneration(req, res) {
 
   const gatewayModel = normalizeModelName(model);
 
-  console.log(`[圖片生成] 模型: ${gatewayModel}, 解析度: ${imageSize}, 長寬比: ${aspectRatio}, 輸出: ${imageOutputMode}`);
+  console.log(`[圖片生成] 模型: ${gatewayModel}, 解析度: ${imageConfig.imageSize || '未知'}, 長寬比: ${imageConfig.aspectRatio || '未知'}, 輸出: ${imageOutputMode}`);
   console.log(`[圖片生成] Prompt: ${prompt.substring(0, 100)}...`);
 
   try {
@@ -396,10 +398,7 @@ async function handleImageGeneration(req, res) {
       providerOptions: {
         google: {
           responseModalities: ['TEXT', 'IMAGE'],
-          imageConfig: {
-            imageSize,
-            aspectRatio,
-          },
+          imageConfig,
         },
       },
     });
