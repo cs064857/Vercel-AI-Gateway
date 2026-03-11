@@ -12,6 +12,25 @@ app.set('trust proxy', true);
 //最大請求體 50MB（圖片 base64 可能很大）
 app.use(express.json({ limit: '50mb' }));
 
+// 請求日誌記錄中間件：打印完整的接收參數與響應頭
+app.use((req, res, next) => {
+  console.log(`\n========== 接收到新請求: ${req.method} ${req.url} ==========`);
+  console.log('[請求頭 (Request Headers)]:\n', JSON.stringify(req.headers, null, 2));
+  console.log('[請求參數 (Query)]:\n', JSON.stringify(req.query, null, 2));
+  try {
+    console.log('[請求體 (Body)]:\n', JSON.stringify(req.body, null, 2));
+  } catch (err) {
+    console.log('[請求體 (Body)]: 無法序列化為 JSON', req.body);
+  }
+
+  res.on('finish', () => {
+    console.log(`\n========== 請求處理完成: ${req.method} ${req.url} [狀態碼: ${res.statusCode}] ==========`);
+    console.log('[響應頭 (Response Headers)]:\n', JSON.stringify(res.getHeaders(), null, 2));
+  });
+
+  next();
+});
+
 function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isFinite(parsed) && parsed > 0) return parsed;
