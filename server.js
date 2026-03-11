@@ -9,17 +9,59 @@ const PORT = process.env.PORT || 48000;
 //最大請求體 50MB（圖片 base64 可能很大）
 app.use(express.json({ limit: '50mb' }));
 
+// 請求與響應日誌記錄
+app.use((req, res, next) => {
+  console.log(`\n=== 收到請求: ${req.method} ${req.originalUrl} ===`);
+  console.log(`[請求頭]`, JSON.stringify(req.headers, null, 2));
+  
+  if (req.body && Object.keys(req.body).length > 0) {
+    try {
+      const logBody = JSON.parse(JSON.stringify(req.body));
+      if (Array.isArray(logBody.messages)) {
+        logBody.messages.forEach(m => {
+          if (Array.isArray(m.content)) {
+            m.content.forEach(p => {
+              if (p.type === 'image_url' && p.image_url) {
+                if (typeof p.image_url === 'string' && p.image_url.length > 200) {
+                  p.image_url = p.image_url.substring(0, 50) + '...[TRUNCATED_IMAGE_DATA]';
+                } else if (typeof p.image_url.url === 'string' && p.image_url.url.length > 200) {
+                  p.image_url.url = p.image_url.url.substring(0, 50) + '...[TRUNCATED_IMAGE_DATA]';
+                }
+              }
+            });
+          }
+        });
+      }
+      console.log(`[請求參數]`, JSON.stringify(logBody, null, 2));
+    } catch (e) {
+      console.log(`[請求參數] 日誌轉化失敗`);
+    }
+  }
+
+  res.on('finish', () => {
+    console.log(`=== 請求結束: ${req.method} ${req.originalUrl} [HTTP ${res.statusCode}] ===`);
+    console.log(`[響應頭]`, JSON.stringify(res.getHeaders(), null, 2));
+  });
+
+  next();
+});
+
 //圖片生成相關模型名稱（匹配判斷用）
 const IMAGE_MODELS = [
   'gemini-3-pro-image',
   'gemini-3-pro-image-preview',
   'gemini-2.5-flash-image-preview',
   'gemini-2.5-flash-image',
+  'gemini-3.1-flash-image-preview',
 ];
 
 //判斷是否為圖片生成模型
 function isImageModel(model) {
+  if (!model) return false;
   const modelLower = model.toLowerCase().replace('google/', '');
+  if (modelLower.includes('gemini') && modelLower.includes('image')) {
+    return true;
+  }
   return IMAGE_MODELS.some(m => modelLower.includes(m));
 }
 
@@ -41,22 +83,36 @@ function normalizeModelName(model) {
 
 //解析圖片生成參數
 function parseImageParams(body) {
-  //默認值
-  let imageSize = '4K';
-  let aspectRatio = '1:1';
+  // 默認值
+  const config = {
+    imageSize: '4K',
+    aspectRatio: '16:9'
+  };
 
-  //從 body 頂層讀取（自定義擴展欄位）
-  if (body.imageSize) imageSize = body.imageSize;
-  if (body.resolution) imageSize = body.resolution;
-  if (body.aspectRatio) aspectRatio = body.aspectRatio;
-  if (body.aspect_ratio) aspectRatio = body.aspect_ratio;
+  // 提取標準欄位外的所有自定義參數
+  const standardKeys = ['model', 'messages', 'stream'];
+  const extraBodyParams = {};
+  for (const key of Object.keys(body)) {
+    if (!standardKeys.includes(key) && key !== 'providerOptions') {
+      extraBodyParams[key] = body[key];
+    }
+  }
 
-  //從 providerOptions 讀取（覆蓋優先）
-  const googleOpts = body.providerOptions?.google?.imageConfig;
-  if (googleOpts?.imageSize) imageSize = googleOpts.imageSize;
-  if (googleOpts?.aspectRatio) aspectRatio = googleOpts.aspectRatio;
+  // 相容舊的命名
+  if (extraBodyParams.resolution) {
+    extraBodyParams.imageSize = extraBodyParams.resolution;
+    delete extraBodyParams.resolution;
+  }
+  if (extraBodyParams.aspect_ratio) {
+    extraBodyParams.aspectRatio = extraBodyParams.aspect_ratio;
+    delete extraBodyParams.aspect_ratio;
+  }
 
-  return { imageSize, aspectRatio };
+  // 從 providerOptions 讀取
+  const googleOpts = body.providerOptions?.google?.imageConfig || {};
+
+  // 合併並以使用者傳的參數為優先覆蓋
+  return { ...config, ...extraBodyParams, ...googleOpts };
 }
 
 //從 messages 中提取 prompt
@@ -189,7 +245,7 @@ async function handleImageGeneration(req, res) {
   }
 
   const { model, messages, stream } = req.body;
-  const { imageSize, aspectRatio } = parseImageParams(req.body);
+  const imageConfig = parseImageParams(req.body);
   const prompt = extractPrompt(messages);
 
   if (!prompt) {
@@ -200,7 +256,7 @@ async function handleImageGeneration(req, res) {
 
   const gatewayModel = normalizeModelName(model);
 
-  console.log(`[圖片生成] 模型: ${gatewayModel}, 解析度: ${imageSize}, 長寬比: ${aspectRatio}`);
+  console.log(`[圖片生成] 模型: ${gatewayModel}, imageConfig: ${JSON.stringify(imageConfig)}`);
   console.log(`[圖片生成] Prompt: ${prompt.substring(0, 100)}...`);
 
   try {
@@ -213,10 +269,7 @@ async function handleImageGeneration(req, res) {
       providerOptions: {
         google: {
           responseModalities: ['TEXT', 'IMAGE'],
-          imageConfig: {
-            imageSize,
-            aspectRatio,
-          },
+          imageConfig: imageConfig,
         },
       },
     });
