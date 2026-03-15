@@ -75,9 +75,9 @@ function extractApiKey(req) {
   return authHeader;
 }
 
-//規範化模型名稱（確保帶 google/ 前綴）
+//規範化模型名稱（如果沒有提供商前綴，預設使用 google/）
 function normalizeModelName(model) {
-  if (model.startsWith('google/')) return model;
+  if (model.includes('/')) return model;
   return `google/${model}`;
 }
 
