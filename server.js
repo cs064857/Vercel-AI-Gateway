@@ -90,7 +90,7 @@ function parseImageParams(body) {
   };
 
   // 提取標準欄位外的所有自定義參數
-  const standardKeys = ['model', 'messages', 'stream'];
+  const standardKeys = ['model', 'messages', 'stream', 'input', 'instructions'];
   const extraBodyParams = {};
   for (const key of Object.keys(body)) {
     if (!standardKeys.includes(key) && key !== 'providerOptions') {
@@ -177,8 +177,67 @@ function convertMessages(messages) {
   });
 }
 
-//構建 OpenAI 格式的 chat completion 回應
-function buildChatCompletionResponse(model, content, files = []) {
+//將請求體正規化為 AI SDK 的 messages 格式
+function normalizeToSdkMessages(body, format) {
+  if (format === 'chat') {
+    return convertMessages(body.messages || []);
+  }
+
+  if (format === 'responses') {
+    const sdkMessages = [];
+    if (body.instructions) {
+      sdkMessages.push({ role: 'system', content: body.instructions });
+    }
+
+    const inputItems = body.input || [];
+    for (const item of inputItems) {
+      if (item.type === 'message') {
+        if (typeof item.content === 'string') {
+          sdkMessages.push({ role: item.role || 'user', content: item.content });
+        } else if (Array.isArray(item.content)) {
+          const converted = convertMessages([{ role: item.role || 'user', content: item.content }]);
+          sdkMessages.push(converted[0]);
+        }
+      } else if (item.type === 'input_text') {
+        sdkMessages.push({ role: 'user', content: item.text });
+      } else if (item.type === 'input_image') {
+        const url = typeof item.image_url === 'string' ? item.image_url : item.image_url?.url;
+        let imagePart;
+        if (url?.startsWith('data:')) {
+          const match = url.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            imagePart = { type: 'image', image: match[2], mediaType: match[1] };
+          }
+        }
+        if (!imagePart && url) {
+          imagePart = { type: 'image', image: new URL(url) };
+        }
+        if (imagePart) {
+          sdkMessages.push({ role: 'user', content: [imagePart] });
+        }
+      }
+    }
+
+    // 將相鄰同 role 的訊息合併，以避免部分模型不支援連續 user message 的錯誤
+    let merged = [];
+    for (const msg of sdkMessages) {
+      if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
+        let prevContent = merged[merged.length - 1].content;
+        let currContent = msg.content;
+        if (!Array.isArray(prevContent)) prevContent = [{ type: 'text', text: prevContent }];
+        if (!Array.isArray(currContent)) currContent = [{ type: 'text', text: currContent }];
+        merged[merged.length - 1].content = [...prevContent, ...currContent];
+      } else {
+        merged.push(msg);
+      }
+    }
+    return merged;
+  }
+  return [];
+}
+
+//構建 API 回應
+function buildAPIResponse(format, model, content, files = []) {
   let responseContent = content || '';
 
   //如果有圖片文件，以 Markdown base64 格式嵌入
@@ -187,7 +246,7 @@ function buildChatCompletionResponse(model, content, files = []) {
       .filter(f => f.mediaType?.startsWith('image/'))
       .map((f, i) => {
         const base64Data = typeof f.base64 === 'string' ? f.base64 : Buffer.from(f.uint8Array).toString('base64');
-        //去除 data URL 前綴（如果有的話）
+        //去除 data URL 前綴
         const cleanBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
         return `![generated_image_${i + 1}](data:${f.mediaType};base64,${cleanBase64})`;
       });
@@ -197,6 +256,26 @@ function buildChatCompletionResponse(model, content, files = []) {
         ? `${responseContent}\n\n${imageMarkdowns.join('\n\n')}`
         : imageMarkdowns.join('\n\n');
     }
+  }
+
+  if (format === 'responses') {
+    return {
+      id: `resp-${uuidv4()}`,
+      object: 'response',
+      created: Math.floor(Date.now() / 1000),
+      model: model,
+      status: 'completed',
+      output: [{
+        type: 'message',
+        role: 'assistant',
+        content: responseContent,
+      }],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      },
+    };
   }
 
   return {
@@ -221,7 +300,21 @@ function buildChatCompletionResponse(model, content, files = []) {
 }
 
 //構建 SSE 串流格式的 chunk
-function buildStreamChunk(model, content, finishReason = null) {
+function buildStreamChunk(format, model, content, finishReason = null) {
+  if (format === 'responses') {
+    return {
+      id: `resp-${uuidv4()}`,
+      object: 'response.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: model,
+      output: [{
+        type: 'message',
+        role: 'assistant',
+        content: content || ''
+      }]
+    };
+  }
+
   return {
     id: `chatcmpl-${uuidv4()}`,
     object: 'chat.completion.chunk',
@@ -236,7 +329,7 @@ function buildStreamChunk(model, content, finishReason = null) {
 }
 
 //處理圖片生成請求
-async function handleImageGeneration(req, res) {
+async function handleImageGeneration(req, res, format) {
   const apiKey = extractApiKey(req);
   if (!apiKey) {
     return res.status(401).json({
@@ -244,19 +337,20 @@ async function handleImageGeneration(req, res) {
     });
   }
 
-  const { model, messages, stream } = req.body;
+  const { model, stream } = req.body;
   const imageConfig = parseImageParams(req.body);
-  const prompt = extractPrompt(messages);
+  const sdkMessages = normalizeToSdkMessages(req.body, format);
+  const prompt = extractPrompt(sdkMessages);
 
   if (!prompt) {
     return res.status(400).json({
-      error: { message: 'No prompt found in messages', type: 'invalid_request_error' }
+      error: { message: 'No prompt found in request', type: 'invalid_request_error' }
     });
   }
 
   const gatewayModel = normalizeModelName(model);
 
-  console.log(`[圖片生成] 模型: ${gatewayModel}, imageConfig: ${JSON.stringify(imageConfig)}`);
+  console.log(`[圖片生成] 模型: ${gatewayModel}, format: ${format}, imageConfig: ${JSON.stringify(imageConfig)}`);
   console.log(`[圖片生成] Prompt: ${prompt.substring(0, 100)}...`);
 
   try {
@@ -265,7 +359,7 @@ async function handleImageGeneration(req, res) {
     //使用 generateText（Gemini 圖片模型是語言模型，透過 files 返回圖片）
     const result = await generateText({
       model: gateway(gatewayModel),
-      messages: convertMessages(messages),
+      messages: sdkMessages,
       providerOptions: {
         google: {
           responseModalities: ['TEXT', 'IMAGE'],
@@ -284,21 +378,27 @@ async function handleImageGeneration(req, res) {
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      const fullResponse = buildChatCompletionResponse(responseModel, textContent, files);
-      const content = fullResponse.choices[0].message.content;
+      const fullResponse = buildAPIResponse(format, responseModel, textContent, files);
+      
+      let chunkContent = textContent;
+      if (format === 'chat') {
+        chunkContent = fullResponse.choices[0].message.content;
+      } else if (format === 'responses') {
+        chunkContent = fullResponse.output[0].content;
+      }
 
       //發送內容 chunk
-      const chunk = buildStreamChunk(responseModel, content);
+      const chunk = buildStreamChunk(format, responseModel, chunkContent);
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);
 
       //發送結束 chunk
-      const endChunk = buildStreamChunk(responseModel, null, 'stop');
+      const endChunk = buildStreamChunk(format, responseModel, null, 'stop');
       res.write(`data: ${JSON.stringify(endChunk)}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
     } else {
       //非串流模式
-      const response = buildChatCompletionResponse(responseModel, textContent, files);
+      const response = buildAPIResponse(format, responseModel, textContent, files);
       res.json(response);
     }
 
@@ -316,7 +416,7 @@ async function handleImageGeneration(req, res) {
 }
 
 //處理通用對話請求
-async function handleChatCompletion(req, res) {
+async function handleChatCompletion(req, res, format) {
   const apiKey = extractApiKey(req);
   if (!apiKey) {
     return res.status(401).json({
@@ -324,14 +424,14 @@ async function handleChatCompletion(req, res) {
     });
   }
 
-  const { model, messages, stream } = req.body;
+  const { model, stream } = req.body;
   const gatewayModel = normalizeModelName(model);
 
-  console.log(`[對話] 模型: ${gatewayModel}, 串流: ${!!stream}`);
+  console.log(`[對話] 模型: ${gatewayModel}, format: ${format}, 串流: ${!!stream}`);
 
   try {
     const gateway = createGateway({ apiKey });
-    const sdkMessages = convertMessages(messages);
+    const sdkMessages = normalizeToSdkMessages(req.body, format);
 
     if (stream) {
       //串流模式
@@ -345,11 +445,11 @@ async function handleChatCompletion(req, res) {
       });
 
       for await (const chunk of result.textStream) {
-        const sseChunk = buildStreamChunk(model, chunk);
+        const sseChunk = buildStreamChunk(format, model, chunk);
         res.write(`data: ${JSON.stringify(sseChunk)}\n\n`);
       }
 
-      const endChunk = buildStreamChunk(model, null, 'stop');
+      const endChunk = buildStreamChunk(format, model, null, 'stop');
       res.write(`data: ${JSON.stringify(endChunk)}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
@@ -360,7 +460,7 @@ async function handleChatCompletion(req, res) {
         messages: sdkMessages,
       });
 
-      const response = buildChatCompletionResponse(model, result.text, result.files);
+      const response = buildAPIResponse(format, model, result.text, result.files);
       res.json(response);
     }
   } catch (error) {
@@ -392,10 +492,27 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 
   if (isImageModel(model)) {
-    return handleImageGeneration(req, res);
+    return handleImageGeneration(req, res, 'chat');
   }
 
-  return handleChatCompletion(req, res);
+  return handleChatCompletion(req, res, 'chat');
+});
+
+//OpenAI 相容端點 - 額外支援 /v1/responses
+app.post('/v1/responses', async (req, res) => {
+  const { model } = req.body;
+
+  if (!model) {
+    return res.status(400).json({
+      error: { message: 'model is required', type: 'invalid_request_error' }
+    });
+  }
+
+  if (isImageModel(model)) {
+    return handleImageGeneration(req, res, 'responses');
+  }
+
+  return handleChatCompletion(req, res, 'responses');
 });
 
 //模型列表端點（基本相容）
@@ -413,7 +530,7 @@ app.get('/v1/models', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`=== Vercel AI Gateway Proxy ===`);
   console.log(`監聽端口: ${PORT}`);
-  console.log(`端點: POST /v1/chat/completions`);
+  console.log(`端點: POST /v1/chat/completions, POST /v1/responses`);
   console.log(`健康檢查: GET /health`);
   console.log(`默認圖片解析度: 4K`);
   console.log(`支援模型: ${IMAGE_MODELS.map(m => `google/${m}`).join(', ')}`);
